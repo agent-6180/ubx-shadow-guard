@@ -1,0 +1,18 @@
+name: Shadow Guard PowerShell checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  windows-powershell-51-static:
+    name: Windows PowerShell 5.1 syntax + static checks
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse and inspect script (no VSS execution)
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & .\tests\Check-Static.ps1
