@@ -45,7 +45,8 @@
 **Policy and operational behavior (v0.5.0):**
 
 - `-Repair` retains the existing quota, include/exclude lists, and backup-volume override unless you explicitly supply new values.
-- Existing invalid or unreadable saved configuration causes an error rather than silent reset.
+- Existing invalid or unreadable saved configuration causes an error rather than silent reset. `-Repair` requires an existing config and checks it before changing services or installation files.
+- `-RunOnce` refuses to create snapshots if there is no saved configuration.
 - During scheduled `-RunOnce`, the script **does not** change service startup types or shadow-storage quotas; it checks current policy and creates the shadow copy.
 - Install/repair updates the schedule and removes obsolete Shadow Guard scheduled tasks for volumes that are no longer selected.
 - Use `-ExcludeVolumes @()` (from a PowerShell call, not a shortcut alias) if you intentionally need to clear an exclusion list.
