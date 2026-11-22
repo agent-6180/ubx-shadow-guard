@@ -245,7 +245,8 @@ function Get-DefaultConfig {
 function Read-JsonFile {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)]$DefaultObject
+        [Parameter(Mandatory = $true)]$DefaultObject,
+        [switch]$RejectInvalid
     )
 
     if (-not (Test-Path -LiteralPath $Path)) {
@@ -256,11 +257,17 @@ function Read-JsonFile {
         $raw = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop
 
         if ([string]::IsNullOrWhiteSpace($raw)) {
+            if ($RejectInvalid) {
+                throw "JSON file is empty: $Path"
+            }
             return $DefaultObject
         }
 
         return $raw | ConvertFrom-Json -ErrorAction Stop
     } catch {
+        if ($RejectInvalid) {
+            throw "Cannot read saved configuration file ${Path}: $($_.Exception.Message)"
+        }
         Write-Log "Could not read JSON file ${Path}. Using defaults. $($_.Exception.Message)" 'WARN'
         return $DefaultObject
     }
@@ -278,7 +285,8 @@ function Write-JsonFile {
 
 function Get-Config {
     $default = Get-DefaultConfig
-    $config = Read-JsonFile -Path $ConfigPath -DefaultObject $default
+    # Never overwrite an unreadable saved policy with defaults during -Repair.
+    $config = Read-JsonFile -Path $ConfigPath -DefaultObject $default -RejectInvalid
     if ($config -is [System.Collections.IDictionary]) {
         $config = [pscustomobject]$config
     }
