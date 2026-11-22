@@ -397,10 +397,9 @@ function Ensure-ServiceRunning {
     try {
         $svc = Get-Service -Name $Name -ErrorAction Stop
 
+        # Preserve current service policy unless repair of a Disabled service is required.
         if ($svc.StartType -eq 'Disabled') {
             Set-Service -Name $Name -StartupType $StartupType -ErrorAction Stop
-        } elseif ($svc.StartType -ne $StartupType -and $Name -in @('Schedule','winmgmt')) {
-            Set-Service -Name $Name -StartupType $StartupType -ErrorAction SilentlyContinue
         }
 
         $svc = Get-Service -Name $Name -ErrorAction Stop
@@ -480,17 +479,33 @@ function Get-ProtectableVolumes {
             continue
         }
 
+        $excludedLabel = $null
         if (-not [bool]$Config.ForceProtectLikelyBackupVolumes) {
             foreach ($bad in @($Config.ExcludedVolumeLabels)) {
                 if (-not [string]::IsNullOrWhiteSpace($bad) -and $label -match [regex]::Escape($bad)) {
-                    Write-Log "Skipping ${device} because volume label '${label}' matches excluded label '${bad}'. Use -ForceProtectLikelyBackupVolumes to override." 'WARN'
-                    continue 2
+                    $excludedLabel = [string]$bad
+                    break
                 }
             }
         }
 
+        if ($null -ne $excludedLabel) {
+            Write-Log "Skipping ${device} because label '${label}' matches excluded label '${excludedLabel}'. Use -ForceProtectLikelyBackupVolumes to override." 'WARN'
+            continue
+        }
+
         if ([int64]$v.Size -lt 10737418240) {
             Write-Log "Skipping ${device} because volume is smaller than 10 GB." 'WARN'
+            continue
+        }
+
+        if ([string]$v.FileSystem -notin @('NTFS','ReFS')) {
+            Write-Log "Skipping ${device} because filesystem '$($v.FileSystem)' is not NTFS or ReFS." 'WARN'
+            continue
+        }
+
+        if ([int64]$v.FreeSpace -lt 1GB) {
+            Write-Log "Skipping ${device} because available space is below 1 GB." 'WARN'
             continue
         }
 
@@ -545,18 +560,26 @@ function Invoke-ExternalCommand {
     $p = New-Object System.Diagnostics.Process
     $p.StartInfo = $psi
 
-    [void]$p.Start()
+    try {
+        if (-not $p.Start()) {
+            throw "Could not start external command: $FilePath"
+        }
 
-    $stdout = $p.StandardOutput.ReadToEnd()
-    $stderr = $p.StandardError.ReadToEnd()
+        # Concurrent drains prevent deadlock if a child fills its stderr buffer.
+        $stdoutTask = $p.StandardOutput.ReadToEndAsync()
+        $stderrTask = $p.StandardError.ReadToEndAsync()
+        $p.WaitForExit()
+        $stdout = $stdoutTask.GetAwaiter().GetResult()
+        $stderr = $stderrTask.GetAwaiter().GetResult()
 
-    $p.WaitForExit()
-
-    [pscustomobject]@{
-        ExitCode = $p.ExitCode
-        StdOut = $stdout.Trim()
-        StdErr = $stderr.Trim()
-        Combined = (($stdout, $stderr) -join "`n").Trim()
+        [pscustomobject]@{
+            ExitCode = $p.ExitCode
+            StdOut = $stdout.Trim()
+            StdErr = $stderr.Trim()
+            Combined = (($stdout, $stderr) -join "`n").Trim()
+        }
+    } finally {
+        $p.Dispose()
     }
 }
 
@@ -751,7 +774,7 @@ function New-AdaptiveShadowCopy {
             $errors += $msg
 
             if ($r.ReturnValue -in @(6,8,9,10,11,12)) {
-                Repair-CoreServices
+                Write-Log "VSS issue for ${vol}. Run -Repair interactively after investigating provider/storage errors." 'WARN'
             }
         } catch {
             $msg = "${method} exception for ${vol}: $($_.Exception.Message)"
@@ -827,6 +850,20 @@ function Remove-VolumeTasks {
         } catch {
             Write-Log "Failed to remove scheduled task $($t.TaskName): $($_.Exception.Message)" 'WARN'
         }
+    }
+}
+
+function Remove-StaleVolumeTasks {
+    param([Parameter(Mandatory = $true)][object[]]$ProtectedVolumes)
+
+    $wanted = @($ProtectedVolumes | ForEach-Object { Get-TaskNameForVolume -VolumeName $_.DeviceID })
+    $tasks = Get-ScheduledTask -ErrorAction Stop | Where-Object {
+        $_.TaskName -like "$TaskPrefix*" -and $wanted -notcontains $_.TaskName
+    }
+
+    foreach ($task in $tasks) {
+        Unregister-ScheduledTask -TaskName $task.TaskName -Confirm:$false -ErrorAction Stop
+        Write-Log "Removed obsolete scheduled task $($task.TaskName)." 'OK'
     }
 }
 
@@ -980,7 +1017,9 @@ function Invoke-InstallOrRepair {
     foreach ($v in $volumes) {
         Write-Log "Configuring $($v.DeviceID) label='$($v.VolumeName)' sizeGB=$([math]::Round($v.SizeBytes/1GB,1))." 'INFO'
 
-        [void](Set-ShadowStorageQuota -VolumeName $v.DeviceID -Quota $config.Quota)
+        if (-not (Set-ShadowStorageQuota -VolumeName $v.DeviceID -Quota $config.Quota)) {
+            throw "Shadow storage quota configuration failed for $($v.DeviceID); registration stopped."
+        }
 
         Register-VolumeTask -VolumeName $v.DeviceID
 
@@ -988,6 +1027,9 @@ function Invoke-InstallOrRepair {
             [void](New-AdaptiveShadowCopy -VolumeName $v.DeviceID -Config $config)
         }
     }
+
+    # Remove previously scheduled volumes that are now excluded by policy.
+    Remove-StaleVolumeTasks -ProtectedVolumes $volumes
 
     if ($IsRepair) {
         $mode = 'Repair'
@@ -1006,10 +1048,12 @@ function Invoke-RunOnce {
     $config = Get-Config
     $vol = Normalize-VolumeName -InputVolume $Volume
 
-    Repair-CoreServices
+    $eligible = @(Get-ProtectableVolumes -Config $config | Where-Object { $_.DeviceID -eq $vol })
+    if ($eligible.Count -ne 1) {
+        throw "Volume ${vol} is not eligible under saved policy. No shadow copy created."
+    }
 
-    [void](Set-ShadowStorageQuota -VolumeName $vol -Quota $config.Quota)
-
+    # Scheduled snapshots should not resize VSS storage or mutate service startup.
     $ok = New-AdaptiveShadowCopy -VolumeName $vol -Config $config
 
     if (-not $ok) {
