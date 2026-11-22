@@ -1,18 +1,17 @@
 ﻿<#
 .SYNOPSIS
-    UBXShadowGuard - VSS Shadow Copy scheduler and repair utility. v0.3
+    UBXShadowGuard - VSS Shadow Copy scheduler and repair utility. v0.5.0
 
 .DESCRIPTION
     Creates and maintains hourly VSS shadow copies for fixed local Windows volumes.
     Designed for Windows 10/11 and Windows Server 2019+.
-    Build: v0.4 - Windows PowerShell 5.1 compatible process runner.
+    Build: v0.5.0 - maintenance fixes and Windows PowerShell 5.1 compatible runner.
 
     Defaults:
       - 10% shadow storage quota per protected volume
       - hourly snapshots, 24 hours/day
       - CIM first
-      - vssadmin second
-      - WMI object method last resort
+      - WMI object method fallback (no vssadmin creation dependency)
       - no WMIC dependency
       - per-volume scheduled tasks running as SYSTEM
       - C:\Source\UBXShadowGuard config/logging/install location
@@ -85,6 +84,12 @@ param(
     [Parameter(ParameterSetName = 'Repair')]
     [switch]$ForceProtectLikelyBackupVolumes
 )
+
+# Capture caller-supplied options so a -Repair preserves saved policy.
+$script:RequestedParameters = @{}
+foreach ($key in $PSBoundParameters.Keys) {
+    $script:RequestedParameters[$key] = $PSBoundParameters[$key]
+}
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
@@ -232,7 +237,7 @@ function Get-DefaultConfig {
         ExcludedVolumeLabels = @('Veeam','Backup','Repository','Repo','Scratch','Temp','Cache','Pagefile','SQLTemp')
         ForceProtectLikelyBackupVolumes = $false
         PreferCachedMethod = $true
-        MethodOrder = @('CIM','VSSADMIN','WMI')
+        MethodOrder = @('CIM','WMI')
         LastUpdatedUtc = (Get-Date).ToUniversalTime().ToString('o')
     }
 }
@@ -274,6 +279,9 @@ function Write-JsonFile {
 function Get-Config {
     $default = Get-DefaultConfig
     $config = Read-JsonFile -Path $ConfigPath -DefaultObject $default
+    if ($config -is [System.Collections.IDictionary]) {
+        $config = [pscustomobject]$config
+    }
 
     foreach ($key in $default.Keys) {
         if (-not ($config.PSObject.Properties.Name -contains $key)) {
@@ -661,26 +669,6 @@ function New-ShadowViaCim {
     }
 }
 
-function New-ShadowViaVssAdmin {
-    param([Parameter(Mandatory = $true)][string]$VolumeName)
-
-    $vol = Normalize-VolumeName -InputVolume $VolumeName
-
-    $r = Invoke-ExternalCommand -FilePath 'vssadmin.exe' -Arguments @(
-        'create',
-        'shadow',
-        "/for=$vol"
-    )
-
-    [pscustomobject]@{
-        Method = 'VSSADMIN'
-        Success = ($r.ExitCode -eq 0)
-        ReturnValue = [int]$r.ExitCode
-        ShadowID = $null
-        Message = $r.Combined
-    }
-}
-
 function New-ShadowViaWmiLastResort {
     param([Parameter(Mandatory = $true)][string]$VolumeName)
 
@@ -705,10 +693,11 @@ function Get-MethodOrderForVolume {
         [Parameter(Mandatory = $true)]$Config
     )
 
-    $base = @($Config.MethodOrder)
+    # Ignore obsolete VSSADMIN values in older on-disk configuration.
+    $base = @($Config.MethodOrder | Where-Object { $_ -in @('CIM','WMI') })
 
     if ($base.Count -eq 0) {
-        $base = @('CIM','VSSADMIN','WMI')
+        $base = @('CIM','WMI')
     }
 
     # WMI is always last resort.
@@ -746,7 +735,6 @@ function New-AdaptiveShadowCopy {
 
             switch ($method) {
                 'CIM'      { $r = New-ShadowViaCim -VolumeName $vol }
-                'VSSADMIN' { $r = New-ShadowViaVssAdmin -VolumeName $vol }
                 'WMI'      { $r = New-ShadowViaWmiLastResort -VolumeName $vol }
                 default    { continue }
             }
@@ -851,7 +839,15 @@ function Install-Self {
         throw 'Cannot determine current script path. Save the script to disk before running -Install.'
     }
 
-    Copy-Item -LiteralPath $current -Destination $InstalledScriptPath -Force
+    $sourceFull = [System.IO.Path]::GetFullPath($current)
+    $targetFull = [System.IO.Path]::GetFullPath($InstalledScriptPath)
+
+    if ([string]::Equals($sourceFull, $targetFull, [StringComparison]::OrdinalIgnoreCase)) {
+        Write-Log "Already running from ${InstalledScriptPath}; self-copy skipped." 'INFO'
+        return
+    }
+
+    Copy-Item -LiteralPath $sourceFull -Destination $InstalledScriptPath -Force
     Write-Log "Installed utility to ${InstalledScriptPath}." 'OK'
 }
 
@@ -952,12 +948,26 @@ function Invoke-InstallOrRepair {
     Install-Self
 
     $config = Get-Config
-    $config.Quota = $Quota
-    $config.IncludeVolumes = @(Normalize-VolumeList -Volumes $IncludeVolumes)
-    $config.ExcludeVolumes = @(Normalize-VolumeList -Volumes $ExcludeVolumes)
-    $config.ForceProtectLikelyBackupVolumes = [bool]$ForceProtectLikelyBackupVolumes
-    $config.MethodOrder = @('CIM','VSSADMIN','WMI')
-    $config.PreferCachedMethod = $true
+
+    # Only options explicitly passed by the caller replace saved configuration.
+    if ($script:RequestedParameters.ContainsKey('Quota')) {
+        $config.Quota = $Quota
+    }
+    if ($script:RequestedParameters.ContainsKey('IncludeVolumes')) {
+        $config.IncludeVolumes = @(Normalize-VolumeList -Volumes $IncludeVolumes)
+    }
+    if ($script:RequestedParameters.ContainsKey('ExcludeVolumes')) {
+        $config.ExcludeVolumes = @(Normalize-VolumeList -Volumes $ExcludeVolumes)
+    }
+    if ($script:RequestedParameters.ContainsKey('ForceProtectLikelyBackupVolumes')) {
+        $config.ForceProtectLikelyBackupVolumes = [bool]$ForceProtectLikelyBackupVolumes
+    }
+
+    # Preserve PreferCachedMethod; migrate only removed, invalid method.
+    $config.MethodOrder = @('CIM','WMI')
+    if (-not (Test-QuotaValue -Quota $config.Quota)) {
+        throw "Saved shadow storage quota '$($config.Quota)' is invalid."
+    }
 
     Save-Config -Config $config
 
