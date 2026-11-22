@@ -26,7 +26,6 @@
                  Philip Simjanovski's original 2026 UBX ASCII logo.
     Attribution: Original ASCII logo design credited by the project owner to
                  Philip (Phillip) Simjanovski, 2026. Original art not located.
-    Licensing  : No open-source license declared. See NOTICE.md in repository.
     Safety     : VSS snapshots are not a substitute for independent backups.
                  Changing shadow storage quotas can evict existing snapshots.
 
