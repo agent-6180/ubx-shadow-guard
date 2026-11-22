@@ -984,14 +984,11 @@ function Invoke-InstallOrRepair {
         Write-Log 'This OS is outside the declared support target. Continuing best-effort.' 'WARN'
     }
 
-    Repair-CoreServices
-
-    if (-not (Test-CimHealth)) {
-        Write-Log 'CIM is unhealthy after service repair. Continuing with vssadmin/WMI fallback where possible.' 'WARN'
+    if ($IsRepair -and -not (Test-Path -LiteralPath $ConfigPath)) {
+        throw "Saved configuration missing at ${ConfigPath}. Use -Install to create one."
     }
 
-    Install-Self
-
+    # Validate the persisted policy before performing privileged repairs.
     $config = Get-Config
 
     # Only options explicitly passed by the caller replace saved configuration.
@@ -1014,6 +1011,13 @@ function Invoke-InstallOrRepair {
         throw "Saved shadow storage quota '$($config.Quota)' is invalid."
     }
 
+    Repair-CoreServices
+
+    if (-not (Test-CimHealth)) {
+        Write-Log 'CIM is unhealthy after service repair. WMI fallback will be attempted.' 'WARN'
+    }
+
+    Install-Self
     Save-Config -Config $config
 
     $volumes = @(Get-ProtectableVolumes -Config $config)
@@ -1052,6 +1056,10 @@ function Invoke-InstallOrRepair {
 function Invoke-RunOnce {
     Assert-Admin
     Initialize-AppFolders
+
+    if (-not (Test-Path -LiteralPath $ConfigPath)) {
+        throw "Saved configuration missing at ${ConfigPath}. Run -Install before -RunOnce."
+    }
 
     $config = Get-Config
     $vol = Normalize-VolumeName -InputVolume $Volume
