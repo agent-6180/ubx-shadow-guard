@@ -62,6 +62,4 @@
 
 **Production warning:** Shadow copies are not substitutes for independently verified, off-host backups. The code has undergone static review, but **Windows/VSS/runtime integration tests have not yet been completed here**. Validate in a lab prior to production use.
 
-No open-source license has been designated. Repository visibility does not grant reuse or distribution rights.
-
 *Made in Michigan. Building clouds before they were cool.*
