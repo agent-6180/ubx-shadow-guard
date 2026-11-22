@@ -7,7 +7,7 @@ $source = Get-Content -LiteralPath $sourcePath -Raw -Encoding UTF8
 $tokens = $null
 $parseErrors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($sourcePath, [ref]$tokens, [ref]$parseErrors)
-if (@($parseErrors).Count -gt 0) {
+if ($null -ne $parseErrors -and $parseErrors.Count -gt 0) {
     $parseErrors | ForEach-Object { Write-Error $_.Message }
     throw 'PowerShell parser errors detected.'
 }
