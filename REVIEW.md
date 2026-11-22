@@ -9,6 +9,7 @@
 | Unsupported `vssadmin create shadow` fallback | Removed. Shadow creation now uses CIM and then WMI; existing method orders are migrated. | Code fixed |
 | `-Repair` overwrites quota and exclusions | Only explicitly supplied overrides replace existing values; all other saved policy stays intact. | Code fixed |
 | Invalid saved configuration can silently reset protection | Invalid/empty saved `config.json` now raises an error instead of using defaults. | Code fixed |
+| Repair or snapshot may run without installed policy | `-Repair` requires existing config, validates prior to service or installation mutations; `-RunOnce` requires a saved config. | Code fixed |
 | Installing from the installed path copies script onto itself | Compare canonical paths and skip the copy when identical. | Code fixed |
 | Numeric `continue 2` in excluded-label scanning | Replaced with explicit match-then-skip outer volume iteration. | Code fixed |
 | Volumes lacking sufficient free space or suitable filesystems | NTFS/ReFS and 1-GB free-space guard added; volume still must be fixed and >=10 GB. | Code fixed |
