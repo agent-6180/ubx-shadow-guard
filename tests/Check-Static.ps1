@@ -43,6 +43,8 @@ Assert-Contains $repair 'Remove-StaleVolumeTasks' 'Repair does not clean up stal
 
 $runner = Get-FunctionText 'Invoke-RunOnce'
 Assert-Contains $runner 'not eligible under saved policy' 'RunOnce lacks a volume-policy gate.'
+Assert-Contains $runner 'Saved configuration missing' 'RunOnce accepts missing saved configuration.'
+Assert-Contains $repair 'Saved configuration missing' 'Repair accepts missing saved configuration.'
 Assert-Excludes $runner 'Repair-CoreServices|Set-ShadowStorageQuota' 'RunOnce changes services or VSS quotas.'
 
 $install = Get-FunctionText 'Install-Self'
