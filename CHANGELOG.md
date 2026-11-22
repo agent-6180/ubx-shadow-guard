@@ -15,6 +15,7 @@ All notable changes to UBX Shadow Guard are documented here. Versions refer to t
 ### Hardened
 - `-RunOnce` and scheduled snapshot jobs validate the requested volume against saved include/exclude and label policy, fixed-disk type, supported NTFS/ReFS filesystem, minimum 10-GB volume size, and 1-GB available-space floor.
 - Scheduled `-RunOnce` no longer adjusts VSS shadow-storage quota or changes services. VSS failures log an instruction to run `-Repair` manually, rather than automatically changing service configuration.
+- `-RunOnce` refuses to operate without a saved config file; `-Repair` requires an existing configuration and validates it before modifying service state or installed files.
 - Service repair preserves non-disabled service startup policies.
 - `-Install` / `-Repair` stop if configuring a selected volume's VSS quota fails.
 - `-Install` / `-Repair` remove obsolete Shadow Guard scheduled tasks after registering the currently selected volumes.
